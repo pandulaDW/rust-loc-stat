@@ -1,13 +1,13 @@
-use std::{
-    fs::File,
-    io::{BufRead, BufReader},
-};
+use std::{fs::File, io::BufReader};
 
 mod config;
 mod parser;
 fn main() {
-    let file = File::open("foo.txt").unwrap();
+    let file = File::open("data/test.js").unwrap();
     let reader = BufReader::new(file);
 
-    for line in reader.lines() {}
+    let mut p = parser::Parser::new(config::Language::Javascript);
+    p.parse(reader).expect("sudo");
+
+    println!("{:?}", p);
 }
