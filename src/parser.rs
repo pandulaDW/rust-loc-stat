@@ -51,7 +51,7 @@ impl Parser {
         use config::Language::*;
 
         match self.language {
-            Javascript => {
+            Javascript | Typescript => {
                 if self.is_within_multiline_comment {
                     if line.contains("*/") {
                         self.is_within_multiline_comment = false;
@@ -59,7 +59,9 @@ impl Parser {
                     return true;
                 } else {
                     if line.starts_with("/*") {
-                        self.is_within_multiline_comment = true;
+                        if !line.contains("*/") {
+                            self.is_within_multiline_comment = true;
+                        }
                         return true;
                     } else if line.starts_with("//") {
                         return true;
@@ -76,7 +78,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_comments() {
+    fn test_parse_comments_js_ts() {
         let mut js_parser = Parser::new(config::Language::Javascript);
         assert!(js_parser.parse_comments("/*"));
         assert!(js_parser.is_within_multiline_comment);
@@ -88,8 +90,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_input_block() {
-        let mut parser = Parser::new(config::Language::Javascript);
+    fn test_parse_input_block_js_ts() {
+        let mut parser = Parser::new(config::Language::Typescript);
         let code_block = r"/*
             This is multi comment block
         */
@@ -100,14 +102,17 @@ mod tests {
         
         // another comment
         
-        add(2, 3);";
+        add(2, 3);
+        
+        /* another multiline block but in a single line */
+        ";
 
         let input = Vec::from(code_block);
         let reader = BufReader::new(input.as_slice());
         let result = parser.parse(reader);
         assert!(result.is_ok());
 
-        assert_eq!(parser.line_stats, (4, 3, 4));
+        assert_eq!(parser.line_stats, (4, 5, 5));
         assert!(!parser.is_within_multiline_comment);
     }
 }

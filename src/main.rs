@@ -1,13 +1,11 @@
-use std::{fs::File, io::BufReader};
+#![allow(dead_code)]
 
 mod config;
 mod parser;
+mod process;
+
 fn main() {
-    let file = File::open("data/test.js").unwrap();
-    let reader = BufReader::new(file);
-
-    let mut p = parser::Parser::new(config::Language::Javascript);
-    p.parse(reader).expect("sudo");
-
-    println!("{:?}", p);
+    let c = config::Config::new("/Users/pandula/Desktop/api");
+    let _handlers = process::process_files(&c).expect("error occurred");
+    println!("{}", _handlers.len());
 }
