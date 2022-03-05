@@ -24,7 +24,6 @@ impl Config {
 
         // TODO - get this by configuration file
         let excluded_dirs = create_excluded_paths(path, vec![".git", "target", "node_modules"]);
-        println!("excluded -> {:?}", excluded_dirs);
 
         Config {
             directory: p,
