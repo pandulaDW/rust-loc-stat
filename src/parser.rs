@@ -7,8 +7,8 @@ pub type LineStats = (u32, u32, u32);
 #[derive(Debug)]
 pub struct Parser {
     pub line_stats: LineStats,
+    pub language: config::Language,
     is_within_multiline_comment: bool,
-    language: config::Language,
 }
 
 impl Parser {

@@ -1,65 +1,148 @@
-use super::config::Language;
+use super::config::{Config, Language};
 use super::parser::{LineStats, Parser};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::{fs, fs::File, io};
+use std::{fs, fs::File, io, thread};
 
-/// Responsible in processing all the files, aggregating the results and displaying
-pub struct Processor {
-    pub aggregated_result: LineStats,
+use crossbeam::channel::bounded;
+use crossbeam::sync::WaitGroup;
+struct HandlerWithLanguage {
+    path: PathBuf,
+    language: Language,
 }
 
-impl Processor {
-    pub fn new() -> Self {
-        Processor {
-            aggregated_result: (0, 0, 0),
+pub fn process_files(conf: &Config) -> io::Result<()> {
+    let mut handlers = Vec::new();
+
+    // unbuffered channels which handles the fan-out of file parsing
+    let (file_producer, p_consumer_1) = bounded(0);
+    let p_consumer_2 = p_consumer_1.clone();
+
+    // unbuffered channels which handles the fan-in of aggregating result
+    let (p_producer_1, aggregate_consumer) = bounded(0);
+    let p_producer_2 = p_producer_1.clone();
+
+    // spawning parser thread 1
+    thread::spawn(move || loop {
+        if let Ok(handler) = p_consumer_1.recv() {
+            let p = process_file(handler).unwrap();
+            p_producer_1.send(p).unwrap();
+        } else {
+            break;
         }
+    });
+
+    // spawning parser thread 2
+    thread::spawn(move || loop {
+        if let Ok(handler) = p_consumer_2.recv() {
+            let p = process_file(handler).unwrap();
+            p_producer_2.send(p).unwrap();
+        } else {
+            break;
+        }
+    });
+
+    // creating a WaitGroup to wait until the aggregation is finished
+    let wg = WaitGroup::new();
+    let w_for_agg = wg.clone();
+
+    // spawning a single consumer to aggregate the results.
+    // This will print out the end results
+    thread::spawn(move || {
+        let mut results_map = initiate_results_map();
+
+        loop {
+            if let Ok(parser) = aggregate_consumer.recv() {
+                aggregate_results(&mut results_map, parser);
+            } else {
+                println!("{:?}", results_map);
+                drop(w_for_agg);
+                break;
+            }
+        }
+    });
+
+    // collect the file paths with the correct languages
+    read_files(&conf.directory, &conf.excluded_dirs, &mut handlers)?;
+
+    // send each file to available consumers
+    for h in handlers {
+        file_producer.send(h).unwrap();
     }
 
-    /// Walks the directory recursively, open each file handler found and process it in a sequence.
-    ///
-    /// Handlers will be dropped one after the other, to avoid panicking after having too many open
-    /// file handlers.
-    ///
-    /// If there's an error in handling a file, that file will be omitted silently.
-    pub fn process_files(&mut self, dir: &Path, excluded_dirs: &Vec<PathBuf>) -> io::Result<()> {
-        if dir.is_dir() {
-            if is_dir_excluded(dir, excluded_dirs) {
-                return Ok(());
-            }
+    // drop the file producer after handling all the files. Which would drop the parser consumers.
+    drop(file_producer);
 
-            for entry in fs::read_dir(dir)? {
-                let entry = entry?;
-                let path = entry.path();
+    // block until aggregation thread has finished its work.
+    wg.wait();
 
-                if path.is_dir() {
-                    self.process_files(&path, excluded_dirs)?;
-                } else {
-                    if let Ok(f) = File::open(&path) {
-                        if let Some(language) = get_language_by_extension(&path) {
-                            self.process_file(f, language)?;
-                        }
-                    }
+    Ok(())
+}
+
+/// Walks the directory recursively, open each file handler found and process it in a sequence.
+///
+/// Handlers will be dropped one after the other, to avoid panicking after having too many open
+/// file handlers.
+///
+/// If there's an error in handling a file, that file will be omitted silently.
+fn read_files(
+    dir: &Path,
+    excluded_dirs: &Vec<PathBuf>,
+    handlers: &mut Vec<HandlerWithLanguage>,
+) -> io::Result<()> {
+    if dir.is_dir() {
+        if is_dir_excluded(dir, excluded_dirs) {
+            return Ok(());
+        }
+
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_dir() {
+                read_files(&path, excluded_dirs, handlers)?;
+            } else {
+                if let Some(language) = get_language_by_extension(&path) {
+                    handlers.push(HandlerWithLanguage { path, language })
                 }
             }
         }
-
-        Ok(())
     }
 
-    // process the individual file. Parses and then aggregate the result
-    fn process_file(&mut self, handler: File, language: Language) -> io::Result<()> {
-        let buf_reader = io::BufReader::new(handler);
-        let mut parser = Parser::new(language);
-        parser.parse(buf_reader)?;
-        self.aggregate_result(parser);
-        Ok(())
-    }
+    Ok(())
+}
 
-    fn aggregate_result(&mut self, parser: Parser) {
-        self.aggregated_result.0 += parser.line_stats.0;
-        self.aggregated_result.1 += parser.line_stats.1;
-        self.aggregated_result.2 += parser.line_stats.2;
-    }
+// process the individual file. Parses and then aggregate the result
+fn process_file(handler: HandlerWithLanguage) -> io::Result<Parser> {
+    // create the buffered reader
+    let f = File::open(handler.path)?;
+    let buf_reader = io::BufReader::new(f);
+
+    // parse the file
+    let mut parser = Parser::new(handler.language);
+    parser.parse(buf_reader)?;
+
+    // // aggregate the result
+    // self.aggregate_result(parser);
+
+    Ok(parser)
+}
+
+// Insert an entry for each support language
+fn initiate_results_map() -> HashMap<Language, LineStats> {
+    let mut map = HashMap::new();
+    map.insert(Language::Javascript, (0, 0, 0));
+    map.insert(Language::Typescript, (0, 0, 0));
+    return map;
+}
+
+// aggregate the results for each language
+fn aggregate_results(result_map: &mut HashMap<Language, LineStats>, parser: Parser) {
+    let mut language_counts = result_map[&parser.language];
+    language_counts.0 += parser.line_stats.0;
+    language_counts.1 += parser.line_stats.1;
+    language_counts.2 += parser.line_stats.2;
+    result_map.insert(parser.language, language_counts);
 }
 
 // check if given directory is an excluded directory

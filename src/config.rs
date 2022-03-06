@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 /// Language includes all the languages supported by the application
-#[derive(Debug)]
+#[derive(Debug, Hash, Eq, PartialEq)]
 pub enum Language {
     Javascript,
     Typescript,
