@@ -1,61 +1,65 @@
-use super::config::{Config, Language};
-use super::parser::Parser;
+use super::config::Language;
+use super::parser::{LineStats, Parser};
 use std::path::{Path, PathBuf};
 use std::{fs, fs::File, io};
-#[derive(Debug)]
-pub struct HandlerWithLanguage {
-    handler: File,
-    language: Language,
+
+/// Responsible in processing all the files, aggregating the results and displaying
+pub struct Processor {
+    pub aggregated_result: LineStats,
 }
 
-/// Collect the relevant file handlers and returns a vector of file handlers with the identified languages
-pub fn process_files(conf: &Config) -> io::Result<()> {
-    let mut handlers = Vec::new();
-    collect_file_handlers(&conf.directory, &mut handlers, &conf.excluded_dirs)?;
-
-    for file_item in handlers {
-        let buf_reader = io::BufReader::new(file_item.handler);
-        let mut parser = Parser::new(file_item.language);
-        parser.parse(buf_reader)?;
-
-        println!("{:?}", parser);
+impl Processor {
+    pub fn new() -> Self {
+        Processor {
+            aggregated_result: (0, 0, 0),
+        }
     }
 
-    Ok(())
-}
+    /// Walks the directory recursively, open each file handler found and process it in a sequence.
+    ///
+    /// Handlers will be dropped one after the other, to avoid panicking after having too many open
+    /// file handlers.
+    ///
+    /// If there's an error in handling a file, that file will be omitted silently.
+    pub fn process_files(&mut self, dir: &Path, excluded_dirs: &Vec<PathBuf>) -> io::Result<()> {
+        if dir.is_dir() {
+            if is_dir_excluded(dir, excluded_dirs) {
+                return Ok(());
+            }
 
-// Walks the directory recursively, open and collects the file handlers while excluding the specified directories.
-// If there's an error opening a file handle, that file will be omitted silently.
-fn collect_file_handlers(
-    dir: &Path,
-    file_paths: &mut Vec<HandlerWithLanguage>,
-    excluded_dirs: &Vec<PathBuf>,
-) -> io::Result<()> {
-    if dir.is_dir() {
-        if is_dir_excluded(dir, excluded_dirs) {
-            return Ok(());
-        }
+            for entry in fs::read_dir(dir)? {
+                let entry = entry?;
+                let path = entry.path();
 
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.is_dir() {
-                collect_file_handlers(&path, file_paths, excluded_dirs)?;
-            } else {
-                if let Ok(f) = File::open(&path) {
-                    if let Some(language) = get_language_by_extension(&path) {
-                        file_paths.push(HandlerWithLanguage {
-                            handler: f,
-                            language,
-                        });
+                if path.is_dir() {
+                    self.process_files(&path, excluded_dirs)?;
+                } else {
+                    if let Ok(f) = File::open(&path) {
+                        if let Some(language) = get_language_by_extension(&path) {
+                            self.process_file(f, language)?;
+                        }
                     }
                 }
             }
         }
+
+        Ok(())
     }
 
-    Ok(())
+    // process the individual file. Parses and then aggregate the result
+    fn process_file(&mut self, handler: File, language: Language) -> io::Result<()> {
+        let buf_reader = io::BufReader::new(handler);
+        let mut parser = Parser::new(language);
+        parser.parse(buf_reader)?;
+        self.aggregate_result(parser);
+        Ok(())
+    }
+
+    fn aggregate_result(&mut self, parser: Parser) {
+        self.aggregated_result.0 += parser.line_stats.0;
+        self.aggregated_result.1 += parser.line_stats.1;
+        self.aggregated_result.2 += parser.line_stats.2;
+    }
 }
 
 // check if given directory is an excluded directory
@@ -73,10 +77,8 @@ fn get_language_by_extension(path: &Path) -> Option<Language> {
     if let Some(extension) = path.extension() {
         let ext_str = extension.to_str().unwrap_or("");
         match ext_str {
-            "js" => Some(Language::Javascript),
-            "ts" => Some(Language::Javascript),
-            "jsx" => Some(Language::Typescript),
-            "tsx" => Some(Language::Typescript),
+            "js" | "jsx" => Some(Language::Javascript),
+            "ts" | "tsx" => Some(Language::Typescript),
             _ => None,
         }
     } else {

@@ -1,12 +1,12 @@
 use super::config;
 use std::io::{self, BufRead, BufReader, Read};
 
-/// Parser encapsulates information about the currently parsed file
-///
 /// line_stats tuple corresponds to (code_lines, empty_lines, comment_lines)
+pub type LineStats = (u32, u32, u32);
+/// Parser encapsulates information about the currently parsed file
 #[derive(Debug)]
 pub struct Parser {
-    line_stats: (u32, u32, u32),
+    pub line_stats: LineStats,
     is_within_multiline_comment: bool,
     language: config::Language,
 }
