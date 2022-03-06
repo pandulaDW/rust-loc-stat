@@ -4,43 +4,36 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::{fs, fs::File, io, thread};
 
-use crossbeam::channel::bounded;
+use crossbeam::channel::{bounded, Receiver, Sender};
 use crossbeam::sync::WaitGroup;
+
+/// Helper struct to pass the file_paths around
 struct HandlerWithLanguage {
     path: PathBuf,
     language: Language,
 }
 
+/// Parses the files concurrently using an un-buffered channel by first utilizing a single-consumer-multiple-producer
+/// approach and then aggregating the results using a multiple-producer-single-consumer pattern.
+///
+/// Data races are not possible since aggregation is done by only one thread. This is a much more performant approach
+/// compared to using Locks to synchronize memory access.
+///
+/// Since, the standard library only allows mpsc channels, `crossbeam` library is used here to achieve the channel
+/// behaviors as it offers more features and better performance compared to the standard library.
 pub fn process_files(conf: &Config) -> io::Result<()> {
-    let mut handlers = Vec::new();
+    // unbuffered channels which handles the fan-out and fan-in patterns
+    let (file_producer, parser_consumer) = bounded(0);
+    let (parser_producer, aggregate_consumer) = bounded(0);
 
-    // unbuffered channels which handles the fan-out of file parsing
-    let (file_producer, p_consumer_1) = bounded(0);
-    let p_consumer_2 = p_consumer_1.clone();
+    // spawning parser threads
+    for _ in 0..3 {
+        spawn_worker_thread_for_parsing(parser_consumer.clone(), parser_producer.clone());
+    }
 
-    // unbuffered channels which handles the fan-in of aggregating result
-    let (p_producer_1, aggregate_consumer) = bounded(0);
-    let p_producer_2 = p_producer_1.clone();
-
-    // spawning parser thread 1
-    thread::spawn(move || loop {
-        if let Ok(handler) = p_consumer_1.recv() {
-            let p = process_file(handler).unwrap();
-            p_producer_1.send(p).unwrap();
-        } else {
-            break;
-        }
-    });
-
-    // spawning parser thread 2
-    thread::spawn(move || loop {
-        if let Ok(handler) = p_consumer_2.recv() {
-            let p = process_file(handler).unwrap();
-            p_producer_2.send(p).unwrap();
-        } else {
-            break;
-        }
-    });
+    // dropping the original channels to avoid having the program hang on receiving or sending
+    drop(parser_consumer);
+    drop(parser_producer);
 
     // creating a WaitGroup to wait until the aggregation is finished
     let wg = WaitGroup::new();
@@ -63,6 +56,7 @@ pub fn process_files(conf: &Config) -> io::Result<()> {
     });
 
     // collect the file paths with the correct languages
+    let mut handlers = Vec::new();
     read_files(&conf.directory, &conf.excluded_dirs, &mut handlers)?;
 
     // send each file to available consumers
@@ -126,6 +120,21 @@ fn process_file(handler: HandlerWithLanguage) -> io::Result<Parser> {
     // self.aggregate_result(parser);
 
     Ok(parser)
+}
+
+// spawn a thread to consume files and produce results
+fn spawn_worker_thread_for_parsing(
+    consumer_ch: Receiver<HandlerWithLanguage>,
+    prod_ch: Sender<Parser>,
+) {
+    thread::spawn(move || loop {
+        if let Ok(handler) = consumer_ch.recv() {
+            let p = process_file(handler).unwrap();
+            prod_ch.send(p).unwrap();
+        } else {
+            break;
+        }
+    });
 }
 
 // Insert an entry for each support language
