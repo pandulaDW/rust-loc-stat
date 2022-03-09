@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::{fs, fs::File, io, thread};
 
 use crossbeam::channel::{bounded, Receiver, Sender};
-use crossbeam::sync::WaitGroup;
 
 /// Helper struct to pass the file_paths around
 struct HandlerWithLanguage {
@@ -35,24 +34,19 @@ pub fn process_files(conf: &Config) -> io::Result<()> {
     drop(parser_consumer);
     drop(parser_producer);
 
-    // creating a WaitGroup to wait until the aggregation is finished
-    let wg = WaitGroup::new();
-    let w_for_agg = wg.clone();
-
     // spawning a single consumer to aggregate the results.
-    // This will print out the end results
-    thread::spawn(move || {
-        let mut results_map = initiate_results_map();
+    let agg_thread = thread::spawn(move || {
+        let mut results_map = HashMap::new();
 
         loop {
             if let Ok(parser) = aggregate_consumer.recv() {
                 aggregate_results(&mut results_map, parser);
             } else {
-                println!("{:?}", results_map);
-                drop(w_for_agg);
                 break;
             }
         }
+
+        return results_map;
     });
 
     // collect the file paths with the correct languages
@@ -67,8 +61,9 @@ pub fn process_files(conf: &Config) -> io::Result<()> {
     // drop the file producer after handling all the files. Which would drop the parser consumers.
     drop(file_producer);
 
-    // block until aggregation thread has finished its work.
-    wg.wait();
+    // block until aggregation thread has finished its work and take the ownership of the hashmap
+    let results_map = agg_thread.join().unwrap();
+    println!("{:?}", results_map);
 
     Ok(())
 }
@@ -116,9 +111,6 @@ fn process_file(handler: HandlerWithLanguage) -> io::Result<Parser> {
     let mut parser = Parser::new(handler.language);
     parser.parse(buf_reader)?;
 
-    // // aggregate the result
-    // self.aggregate_result(parser);
-
     Ok(parser)
 }
 
@@ -137,17 +129,17 @@ fn spawn_worker_thread_for_parsing(
     });
 }
 
-// Insert an entry for each support language
-fn initiate_results_map() -> HashMap<Language, LineStats> {
-    let mut map = HashMap::new();
-    map.insert(Language::Javascript, (0, 0, 0));
-    map.insert(Language::Typescript, (0, 0, 0));
-    return map;
-}
-
 // aggregate the results for each language
 fn aggregate_results(result_map: &mut HashMap<Language, LineStats>, parser: Parser) {
-    let mut language_counts = result_map[&parser.language];
+    let mut language_counts;
+
+    if let Some(entry) = result_map.get(&parser.language) {
+        language_counts = *entry;
+    } else {
+        result_map.insert(parser.language, (0, 0, 0));
+        return;
+    }
+
     language_counts.0 += parser.line_stats.0;
     language_counts.1 += parser.line_stats.1;
     language_counts.2 += parser.line_stats.2;
@@ -171,7 +163,7 @@ fn get_language_by_extension(path: &Path) -> Option<Language> {
         match ext_str {
             "js" | "jsx" => Some(Language::Javascript),
             "ts" | "tsx" => Some(Language::Typescript),
-            _ => None,
+            v => Some(Language::Other(v.to_string())),
         }
     } else {
         None

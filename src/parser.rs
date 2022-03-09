@@ -69,6 +69,7 @@ impl Parser {
                     return false;
                 }
             }
+            Other(_) => false,
         }
     }
 }

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 pub enum Language {
     Javascript,
     Typescript,
+    Other(String),
 }
 
 /// Contains the configuration data of the application.
