@@ -114,15 +114,17 @@ fn process_file(handler: HandlerWithLanguage) -> io::Result<Parser> {
     Ok(parser)
 }
 
-// spawn a thread to consume files and produce results
+// spawn a thread to consume files and produce results.
+// if a parser error occurs, skip the results.
 fn spawn_worker_thread_for_parsing(
     consumer_ch: Receiver<HandlerWithLanguage>,
     prod_ch: Sender<Parser>,
 ) {
     thread::spawn(move || loop {
         if let Ok(handler) = consumer_ch.recv() {
-            let p = process_file(handler).unwrap();
-            prod_ch.send(p).unwrap();
+            if let Ok(p) = process_file(handler) {
+                prod_ch.send(p).unwrap();
+            }
         } else {
             break;
         }
@@ -131,14 +133,7 @@ fn spawn_worker_thread_for_parsing(
 
 // aggregate the results for each language
 fn aggregate_results(result_map: &mut HashMap<Language, LineStats>, parser: Parser) {
-    let mut language_counts;
-
-    if let Some(entry) = result_map.get(&parser.language) {
-        language_counts = *entry;
-    } else {
-        result_map.insert(parser.language, (0, 0, 0));
-        return;
-    }
+    let mut language_counts = *result_map.get(&parser.language).unwrap_or(&(0, 0, 0));
 
     language_counts.0 += parser.line_stats.0;
     language_counts.1 += parser.line_stats.1;
